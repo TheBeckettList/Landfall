@@ -1,5 +1,5 @@
 // Caches the app itself so it opens with no internet. Photos live in IndexedDB.
-const VERSION = 'landfall-v4';
+const VERSION = 'landfall-v5';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest',
   'js/app.js', 'js/db.js', 'js/geo.js', 'js/map.js', 'js/sync.js', 'js/viewer.js', 'js/progress.js', 'js/config.js',
@@ -20,12 +20,16 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return; // API + photo downloads go straight to network
-  // Cache first (works offline), refresh in the background when online.
-  e.respondWith(
-    caches.open(VERSION).then(async (cache) => {
-      const hit = await cache.match(e.request, { ignoreSearch: true });
-      const net = fetch(e.request).then((res) => { if (res.ok) cache.put(e.request, res.clone()); return res; }).catch(() => null);
-      return hit || (await net) || new Response('Offline', { status: 503 });
-    })
-  );
+  // Network first so updates show up straight away; fall back to the cache when
+  // offline or when a weak connection takes longer than 4 s.
+  e.respondWith((async () => {
+    const cached = caches.match(e.request, { ignoreSearch: true });
+    const net = fetch(e.request).then((res) => {
+      if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put(e.request, copy)); }
+      return res;
+    });
+    const timeout = new Promise((r) => setTimeout(r, 4000));
+    const first = await Promise.race([net.catch(() => null), timeout]);
+    return first || (await cached) || (await net.catch(() => null)) || new Response('Offline', { status: 503 });
+  })());
 });

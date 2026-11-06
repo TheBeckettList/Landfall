@@ -28,7 +28,7 @@
     <div id="readyLabel">rounds ready today</div>
     <button id="playBtn" class="primary" disabled>Play</button>
     <p class="muted" id="stockLine"></p>
-    <button id="onlineBtn" class="online" hidden>🌐 You're online: play unlimited rounds</button>
+    <p class="bank" id="bankLine"></p>
   </div>
 
   <div class="card rank" id="rankCard"></div>
@@ -41,47 +41,46 @@
   </details>
 
   <details class="card" id="syncCard">
-    <summary><span>Sync new rounds</span><span class="muted small" id="lastSync"></span></summary>
-    <p class="muted small">Do this when you have internet. The rounds are saved on this device and unlock a few each day.</p>
+    <summary><span>Download rounds for a trip</span><span class="muted small" id="lastSync"></span></summary>
+    <p class="muted small">Do this before you lose internet. The rounds are saved on this device and unlock a set number each day.</p>
 
-    <label>Data per sync: <b id="budgetOut"></b>
-      <input id="budget" type="range" min="100" max="2000" step="50">
+    <label>Rounds to download: <b id="countOut"></b>
+      <input id="count" type="range" min="10" max="600" step="10">
     </label>
-    <label>Spread over: <b id="daysOut"></b>
-      <input id="days" type="range" min="1" max="30" step="1">
+    <label>Rounds per day: <b id="perDayOut"></b>
+      <input id="perDay" type="range" min="1" max="50" step="1">
     </label>
-    <label>Steps per round: <b id="stepsOut"></b>
-      <input id="steps" type="range" min="0" max="8" step="1">
-    </label>
-    <label>Photo quality
-      <select id="quality">
-        <option value="2048">Sharp (≈0.5 MB per photo)</option>
-        <option value="1024">Data saver (≈0.15 MB per photo)</option>
-      </select>
-    </label>
-    <p class="estimate" id="estimate"></p>
+    <div class="estimate" id="estimate"></div>
+
+    <div class="row">
+      <button id="syncBtn" class="primary">Download</button>
+      <button id="cancelBtn" class="ghost" hidden>Stop</button>
+    </div>
+    <div class="progress" hidden id="progWrap"><div id="prog"></div></div>
+    <p class="muted small" id="syncLog"></p>
 
     <details id="advanced" class="advanced">
       <summary class="small">Advanced</summary>
+      <label>Steps per round: <b id="stepsOut"></b>
+        <input id="steps" type="range" min="0" max="8" step="1">
+      </label>
+      <label>Photo quality
+        <select id="quality">
+          <option value="2048">Sharp (≈0.5 MB per photo)</option>
+          <option value="1024">Data saver (≈0.15 MB per photo)</option>
+        </select>
+      </label>
       <label>Your own Mapillary token (optional)
         <input id="token" type="password" autocomplete="off" placeholder="Leave empty to use the built-in one">
       </label>
       <p class="muted small">Only needed if the built-in token stops working. Free at mapillary.com/dashboard/developers (copy the “Client token”).</p>
     </details>
-
-    <div class="row">
-      <button id="syncBtn" class="primary">Download rounds</button>
-      <button id="cancelBtn" class="ghost" hidden>Stop</button>
-    </div>
-    <div class="progress" hidden id="progWrap"><div id="prog"></div></div>
-    <p class="muted small" id="syncLog"></p>
   </details>
 
   <details class="card">
     <summary>Storage</summary>
     <p id="storageLine" class="muted small"></p>
     <div class="row wrap">
-      <button id="cleanBtn" class="ghost">Delete played photos</button>
       <button id="wipeBtn" class="ghost danger">Delete everything</button>
     </div>
   </details>

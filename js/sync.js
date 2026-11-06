@@ -27,7 +27,7 @@ const FALLBACK_SEEDS = [
 ];
 
 export function defaultSettings() {
-  return { token: '', budgetMB: 500, days: 7, steps: 3, quality: '2048' };
+  return { token: '', count: 140, perDay: 20, steps: 3, quality: '2048' };
 }
 
 async function fetchJSON(url, signal) {
@@ -214,33 +214,32 @@ export async function findRound(s, world, taken, signal) {
 }
 
 // Give every 'pending' round a date, continuing after anything already scheduled.
-export async function schedulePending(days) {
+export async function schedulePending(perDay) {
   const rounds = await db.allRounds();
   const pending = rounds.filter((r) => r.unlockDate === 'pending');
   if (!pending.length) return 0;
   const t = today();
-  const lastDate = rounds.filter((r) => r.unlockDate !== 'pending' && !r.played).reduce((m, r) => (r.unlockDate > m ? r.unlockDate : m), '');
+  const lastDate = rounds.filter((r) => /^\d/.test(r.unlockDate) && !r.played).reduce((m, r) => (r.unlockDate > m ? r.unlockDate : m), '');
   const start = lastDate && lastDate >= t ? addDays(lastDate, 1) : t;
-  const perDay = Math.max(1, Math.ceil(pending.length / Math.max(1, days)));
-  pending.forEach((r, i) => { r.unlockDate = addDays(start, Math.floor(i / perDay)); });
+  const per = Math.max(1, perDay | 0);
+  pending.forEach((r, i) => { r.unlockDate = addDays(start, Math.floor(i / per)); });
   for (const r of pending) await db.putRound(r);
   return pending.length;
 }
 
-export async function runSync(s, { signal, onProgress, log }) {
+// Download `count` rounds and tag them ('pending' = scheduled trip rounds, 'bank' = always-playable reserve).
+export async function fetchRounds(s, count, tag, { signal, onProgress = () => {}, log = () => {} }) {
   const world = await ensureWorld(signal, log).catch((e) => {
     if (e.name === 'AbortError') throw e;
     log('Could not download the world map; continuing without it.');
     return null;
   });
-  const budget = s.budgetMB * 1024 * 1024;
   const existing = await db.allRounds();
   const taken = existing.filter((r) => !r.played).map((r) => ({ lat: r.lat, lon: r.lon }));
   let bytes = 0, made = 0, tries = 0, misses = 0;
   log('Finding locations…');
-
   const worker = async () => {
-    while (bytes < budget && tries < 6000 && !signal.aborted) {
+    while (made < count && tries < 3000 * Math.max(1, count / 50) && !signal.aborted) {
       tries++;
       let r = null;
       try { r = await findRound(s, world, taken, signal); }
@@ -251,16 +250,15 @@ export async function runSync(s, { signal, onProgress, log }) {
         continue;
       }
       if (!r) continue;
-      if (bytes >= budget) { for (const f of r.frames) await db.deleteImage(f.key); break; }
+      if (made >= count) { for (const f of r.frames) await db.deleteImage(f.key); break; }
+      made++; bytes += r.bytes;
+      r.unlockDate = tag;
       taken.push({ lat: r.lat, lon: r.lon });
       await db.putRound(r);
-      bytes += r.bytes;
-      made++;
-      onProgress({ bytes, budget, made, tries });
+      onProgress({ bytes, made, count });
     }
   };
   const results = await Promise.allSettled([worker(), worker(), worker()]);
-  await schedulePending(s.days);
   const fail = results.find((r) => r.status === 'rejected');
   if (fail && !(fail.reason?.name === 'AbortError' && made > 0)) throw fail.reason;
   return { bytes, made };

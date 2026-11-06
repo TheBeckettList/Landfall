@@ -1,7 +1,7 @@
 import * as db from './db.js';
 import { PanoViewer } from './viewer.js';
 import { WorldMap } from './map.js';
-import { runSync, defaultSettings, schedulePending, findRound, ensureWorld } from './sync.js';
+import { fetchRounds, defaultSettings, schedulePending } from './sync.js';
 import { getProgress, rankFor, AWARDS, record, countryAt, awardPerfectDay } from './progress.js';
 import { distanceKm, bearingDeg, score, formatKm, today } from './geo.js';
 import { DEFAULT_TOKEN } from './config.js';
@@ -14,23 +14,38 @@ let settings = defaultSettings();
 let world = null;
 let viewer = null, map = null;
 let syncCtl = null;
+const BANK_SIZE = 10;
+const isDate = (d) => /^\d/.test(d || '');
 
 // ---------- Home ----------
+async function playable() {
+  const t = today();
+  const rounds = (await db.allRounds()).filter((r) => !r.played && r.frames?.length);
+  const daily = rounds.filter((r) => isDate(r.unlockDate) && r.unlockDate <= t);
+  const bank = rounds.filter((r) => r.unlockDate === 'bank');
+  return { daily, bank, all: [...daily, ...bank] };
+}
+
 async function refreshHome() {
   const rounds = await db.allRounds();
   const t = today();
-  const ready = rounds.filter((r) => !r.played && r.unlockDate !== 'pending' && r.unlockDate <= t);
-  const future = rounds.filter((r) => !r.played && r.unlockDate > t && r.unlockDate !== 'pending');
-  $('readyCount').textContent = ready.length;
-  $('readyLabel').textContent = ready.length === 1 ? 'round ready today' : 'rounds ready today';
-  $('playBtn').disabled = !ready.length;
-  if (!rounds.length) $('stockLine').textContent = 'No rounds yet. Open “Sync new rounds” below while you have internet.';
-  else if (future.length) {
+  const { daily, bank } = await playable();
+  const future = rounds.filter((r) => !r.played && isDate(r.unlockDate) && r.unlockDate > t);
+  const total = daily.length + bank.length;
+  $('readyCount').textContent = total;
+  $('readyLabel').textContent = total === 1 ? 'round ready' : 'rounds ready';
+  $('playBtn').disabled = !total && !(navigator.onLine && tokenOf());
+  $('playBtn').textContent = total ? 'Play' : 'Play (loading rounds…)';
+  const online = navigator.onLine;
+  $('bankLine').textContent = `🏦 Bank: ${bank.length}/${BANK_SIZE}` +
+    (bankJob ? ' · topping up…' : online ? ' · online, so play as much as you like' : ' · refills next time you’re online');
+  if (future.length) {
     const last = future[future.length - 1].unlockDate;
     const nextDate = future[0].unlockDate;
     const nextN = future.filter((r) => r.unlockDate === nextDate).length;
-    $('stockLine').textContent = `${nextN} more unlock ${nextDate === nextDay(t) ? 'tomorrow' : 'on ' + nextDate}. Stocked through ${last}.`;
-  } else $('stockLine').textContent = ready.length ? 'This is the last of your stored rounds. Sync again when you’re next online.' : 'All caught up. Sync again when you’re next online.';
+    $('stockLine').textContent = `${daily.length ? `${daily.length} of these are today’s trip rounds.` : 'Today’s trip rounds are done.'} ${nextN} more unlock ${nextDate === nextDay(t) ? 'tomorrow' : 'on ' + nextDate}; stocked through ${last}.`;
+  } else if (daily.length) $('stockLine').textContent = `${daily.length} trip rounds left, plus the bank.`;
+  else $('stockLine').textContent = 'Heading offline? Download trip rounds below.';
 
   const played = rounds.filter((r) => r.played && r.result);
   const avg = played.length ? Math.round(played.reduce((s, r) => s + r.result.points, 0) / played.length) : 0;
@@ -63,7 +78,6 @@ async function refreshHome() {
       <div class="ai">${a.icon}</div><div class="an">${a.name}</div><div class="ad">${a.desc}</div>
     </div>`).join('');
   }).join('');
-  $('onlineBtn').hidden = !(navigator.onLine && tokenOf());
 
   const ls = await db.getMeta('lastSync');
   $('lastSync').textContent = ls ? `last: ${new Date(ls).toLocaleDateString()}` : '';
@@ -86,62 +100,62 @@ async function updateStorage() {
 
 async function loadSettings() {
   settings = { ...defaultSettings(), ...(await db.getMeta('settings', {})) };
-  $('token').value = settings.token;
-  $('budget').value = settings.budgetMB;
-  $('days').value = settings.days;
-  $('steps').value = settings.steps;
-  $('quality').value = settings.quality;
+  for (const k of ['count', 'perDay', 'steps', 'quality', 'token']) $(k).value = settings[k];
   renderSettings();
 }
 
+async function perRoundBytes() {
+  const measured = await db.getMeta('avgFrameBytes_' + settings.quality);
+  const perPhoto = measured || (settings.quality === '1024' ? 0.15 : 0.5) * MB;
+  return { bytes: perPhoto * (1 + settings.steps * 2 * 0.85), measured: !!measured };
+}
+
 async function renderSettings() {
-  settings.budgetMB = +$('budget').value;
-  settings.days = +$('days').value;
+  settings.count = +$('count').value;
+  settings.perDay = +$('perDay').value;
   settings.steps = +$('steps').value;
   settings.quality = $('quality').value;
   settings.token = $('token').value.trim();
-  $('budgetOut').textContent = settings.budgetMB >= 1000 ? `${(settings.budgetMB / 1000).toFixed(2).replace(/0$/, '')} GB` : `${settings.budgetMB} MB`;
-  $('daysOut').textContent = `${settings.days} day${settings.days > 1 ? 's' : ''}`;
+  $('countOut').textContent = settings.count;
+  $('perDayOut').textContent = settings.perDay;
   $('stepsOut').textContent = settings.steps ? `${settings.steps} (walk up to ${settings.steps} photos along the road)` : 'none (one photo per spot)';
-  const measured = await db.getMeta('avgFrameBytes_' + settings.quality);
-  const perPhoto = measured || (settings.quality === '1024' ? 0.15 : 0.5) * MB;
-  const framesPerRound = 1 + settings.steps * 2 * 0.85; // paths are sometimes shorter at the ends of a sequence
-  const rounds = Math.max(1, Math.floor((settings.budgetMB * MB) / (perPhoto * framesPerRound)));
-  const perDay = rounds / settings.days;
-  $('estimate').innerHTML = `≈ <b>${rounds}</b> rounds, about <b>${perDay >= 10 ? Math.round(perDay) : perDay.toFixed(1)}</b> a day for ${settings.days} days.` +
-    (measured ? '' : ' <span class="muted">(estimate gets more accurate after the first sync)</span>');
+  const { bytes, measured } = await perRoundBytes();
+  const days = Math.ceil(settings.count / settings.perDay);
+  const mb = (settings.count * bytes) / MB;
+  const size = mb >= 1000 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
+  $('estimate').innerHTML = `Lasts <b>${days} day${days === 1 ? '' : 's'}</b> · downloads about <b>${size}</b>` +
+    (measured ? '' : '<br><span class="muted small">Size is an estimate until the first download.</span>');
   db.setMeta('settings', settings);
+}
+
+async function rememberSizes() {
+  const rounds = (await db.allRounds()).filter((r) => r.frames?.length && r.bytes);
+  const frames = rounds.reduce((s, r) => s + r.frames.length, 0);
+  if (frames) await db.setMeta('avgFrameBytes_' + settings.quality, rounds.reduce((s, r) => s + r.bytes, 0) / frames);
 }
 
 async function startSync() {
   await renderSettings();
-  if (!tokenOf()) { toast('Add a Mapillary token under Advanced first'); $('advanced').open = true; $('token').focus(); return; }
-  if (!navigator.onLine) { toast('You look offline right now'); }
+  if (!tokenOf()) { toast('Add a Mapillary token under Advanced first'); $('advanced').open = true; return; }
+  if (!navigator.onLine) toast('You look offline right now');
   navigator.storage?.persist?.();
   syncCtl = new AbortController();
   $('syncBtn').hidden = true; $('cancelBtn').hidden = false; $('progWrap').hidden = false; $('prog').style.width = '0';
   const log = (m) => { $('syncLog').textContent = m; };
   try {
-    await cleanPlayed(true);
-    const res = await runSync({ ...settings, token: tokenOf() }, {
-      signal: syncCtl.signal,
-      log,
-      onProgress: ({ bytes, budget, made }) => {
-        $('prog').style.width = `${Math.min(100, (bytes / budget) * 100)}%`;
-        log(`${made} rounds saved · ${(bytes / MB).toFixed(0)} of ${settings.budgetMB} MB`);
+    const res = await fetchRounds({ ...settings, token: tokenOf() }, settings.count, 'pending', {
+      signal: syncCtl.signal, log,
+      onProgress: ({ bytes, made, count }) => {
+        $('prog').style.width = `${(made / count) * 100}%`;
+        log(`${made} of ${count} rounds · ${(bytes / MB).toFixed(0)} MB`);
       },
     });
-    if (res.made) {
-      const rounds = await db.allRounds();
-      const recent = rounds.filter((r) => r.frames?.length && r.bytes);
-      const frames = recent.reduce((s, r) => s + r.frames.length, 0);
-      if (frames) await db.setMeta('avgFrameBytes_' + settings.quality, recent.reduce((s, r) => s + r.bytes, 0) / frames);
-      await db.setMeta('lastSync', Date.now());
-    }
+    if (res.made) { await rememberSizes(); await db.setMeta('lastSync', Date.now()); }
     log(syncCtl.signal.aborted ? `Stopped. ${res.made} rounds saved.` : `Done! ${res.made} rounds saved (${(res.bytes / MB).toFixed(0)} MB).`);
   } catch (e) {
-    log(e.name === 'AbortError' ? 'Stopped.' : `Sync problem: ${e.message}`);
+    log(e.name === 'AbortError' ? 'Stopped.' : `Download problem: ${e.message}`);
   } finally {
+    await schedulePending(settings.perDay);
     syncCtl = null;
     $('syncBtn').hidden = false; $('cancelBtn').hidden = true;
     world = await db.getMeta('world');
@@ -151,36 +165,49 @@ async function startSync() {
   }
 }
 
-async function cleanPlayed(silent) {
-  const rounds = await db.allRounds();
-  let n = 0;
-  for (const r of rounds) {
-    if (!r.played || !r.frames?.length) continue;
-    for (const f of r.frames) await db.deleteImage(f.key);
-    r.frames = []; r.bytes = 0;
-    await db.putRound(r);
-    n++;
-  }
-  if (!silent) toast(n ? `Freed photos from ${n} played rounds` : 'Nothing to clean');
-  refreshHome();
+// ---------- Bank: keep 10 rounds ready, refill whenever online ----------
+let bankJob = null;
+const bankWaiters = [];
+function topUpBank() {
+  if (bankJob) return bankJob;
+  if (!navigator.onLine || !tokenOf()) return Promise.resolve();
+  bankJob = (async () => {
+    try {
+      for (let pass = 0; pass < 3; pass++) {
+        const { bank } = await playable();
+        const need = BANK_SIZE - bank.length;
+        if (need <= 0) break;
+        await fetchRounds({ ...settings, token: tokenOf() }, need, 'bank', {
+          signal: new AbortController().signal,
+          onProgress: () => { bankWaiters.splice(0).forEach((f) => f()); refreshHomeSoon(); },
+        });
+      }
+      world = await db.getMeta('world');
+      if (map && world && !map.rings.length) map.setData(world.countries, world.places);
+    } catch (e) { console.warn('bank refill', e); }
+    finally { bankJob = null; bankWaiters.splice(0).forEach((f) => f()); refreshHomeSoon(); }
+  })();
+  refreshHomeSoon();
+  return bankJob;
+}
+let homeT;
+function refreshHomeSoon() { clearTimeout(homeT); homeT = setTimeout(() => { if ($('home').classList.contains('active')) refreshHome(); }, 300); }
+// Resolves as soon as at least one new round lands (or the refill ends).
+function nextBankArrival() { return new Promise((r) => bankWaiters.push(r)); }
+
+async function cleanPlayed() {
+  for (const r of await db.allRounds()) if (r.played && r.frames?.length) { await deletePhotos(r); await db.putRound(r); }
+}
+
+async function deletePhotos(r) {
+  for (const f of r.frames || []) await db.deleteImage(f.key);
+  r.frames = []; r.bytes = 0;
 }
 
 // ---------- Game ----------
-const game = { mode: 'daily', queue: [], round: null, cur: 0, visited: null, guess: null, total: 0, n: 0, rightCount: 0, heading: 0, done: false, live: null };
+const game = { round: null, cur: 0, visited: null, guess: null, total: 0, n: 0, rightCount: 0, heading: 0, done: false };
 
-async function startGame(mode = 'daily') {
-  const t = today();
-  game.mode = mode;
-  if (mode === 'daily') {
-    game.queue = (await db.allRounds()).filter((r) => !r.played && r.unlockDate !== 'pending' && r.unlockDate <= t && r.frames?.length);
-    if (!game.queue.length) return;
-  } else {
-    await renderSettings();
-    game.queue = [];
-    game.live = { buffer: [], ctl: new AbortController(), filling: null, failed: null, taken: [] };
-    const played = (await db.allRounds()).slice(-60);
-    game.live.taken = played.map((r) => ({ lat: r.lat, lon: r.lon }));
-  }
+async function startGame() {
   game.total = 0; game.n = 0; game.rightCount = 0;
   show('game');
   if (!viewer) {
@@ -191,28 +218,37 @@ async function startGame(mode = 'daily') {
     map = new WorldMap($('map'), { onTap: placeGuess });
     if (world) map.setData(world.countries, world.places);
   }
+  topUpBank();
   nextRound();
 }
 
 async function nextRound() {
-  let r;
-  if (game.mode === 'live') {
-    r = await nextLiveRound();
-    if (!r) return;
-  } else {
-    r = game.queue.shift();
-    if (!r) {
-      if (game.n >= 3 && game.rightCount === game.n) {
-        const a = await awardPerfectDay();
-        if (a) await celebrate(a.icon, a.name, a.desc);
-      }
-      toast(`Day done! ${game.total.toLocaleString()} points`); show('home'); refreshHome(); return;
+  let { daily, bank, all } = await playable();
+  if (!all.length && (bankJob || navigator.onLine)) {
+    $('loading').hidden = false;
+    $('loadingText').textContent = game.n ? 'Finding a new place…' : 'Setting sail… finding your first place';
+    topUpBank();
+    while (!all.length && bankJob && $('game').classList.contains('active')) {
+      await nextBankArrival();
+      ({ daily, bank, all } = await playable());
     }
+    $('loading').hidden = true;
+  }
+  if (!$('game').classList.contains('active')) return;
+  const r = all[0];
+  if (!r) {
+    if (game.n >= 3 && game.rightCount === game.n) {
+      const a = await awardPerfectDay();
+      if (a) await celebrate(a.icon, a.name, a.desc);
+    }
+    toast(game.n ? `That’s all for now: ${game.total.toLocaleString()} points` : 'No rounds available. Get online to refill.');
+    show('home'); refreshHome(); return;
   }
   game.round = r; game.n++;
   game.cur = r.centreIdx; game.visited = new Set([r.centreIdx]);
   game.guess = null; game.done = false;
-  $('roundPill').textContent = game.mode === 'live' ? `Round ${game.n} · 🌐` : `Round ${game.n} of ${game.n + game.queue.length}`;
+  const left = all.length - 1;
+  $('roundPill').textContent = navigator.onLine ? `Round ${game.n} · 🌐` : `Round ${game.n} · ${left} left`;
   $('scorePill').textContent = `${game.total.toLocaleString()} pts`;
   $('guessFoot').hidden = false; $('resultFoot').hidden = true;
   $('guessBtn').disabled = true; $('guessBtn').textContent = 'Tap the map to place a pin';
@@ -296,11 +332,10 @@ async function submitGuess() {
   r.played = true;
   const stepsUsed = game.visited.size - 1;
   r.result = { guess: game.guess, km, points: pts, stepsUsed, playedOn: today() };
-  if (game.mode === 'live') {
-    for (const f of r.frames) await db.deleteImage(f.key);
-    r.frames = []; r.bytes = 0; r.unlockDate = today(); r.live = true;
-  }
+  const wasBank = r.unlockDate === 'bank';
+  await deletePhotos(r); // photos aren't needed after the guess
   await db.putRound(r);
+  if (wasBank) topUpBank();
   const truthCountry = countryAt(world, truth) || countryNear(truth);
   const guessCountry = countryAt(world, game.guess);
   const prog = await record({ km, points: pts, stepsUsed, truthCountry, guessCountry });
@@ -326,7 +361,7 @@ async function submitGuess() {
   const when = r.capturedAt ? ` · ${new Date(r.capturedAt).getFullYear()}` : '';
   $('resCredit').innerHTML = `Photo: ${escapeHtml(r.creator)} on <a href="https://www.mapillary.com/app/?pKey=${r.imageId}" target="_blank" rel="noopener">Mapillary</a>${when} · CC BY-SA`;
   $('scorePill').textContent = `${game.total.toLocaleString()} pts`;
-  $('nextBtn').textContent = game.mode === 'live' || game.queue.length ? 'Next' : 'Finish';
+  $('nextBtn').textContent = 'Next';
 }
 
 function countryNear(p) {
@@ -350,54 +385,8 @@ function celebrate(icon, title, desc, tier = '') {
   });
 }
 
-// ---------- Online (unlimited) mode ----------
-function fillLive() {
-  const L = game.live;
-  if (!L || L.filling) return L?.filling;
-  L.filling = (async () => {
-    try {
-      if (!world || !world.v) { world = await ensureWorld(L.ctl.signal, () => {}); if (map) map.setData(world.countries, world.places); }
-      while (L.buffer.length < 2 && !L.ctl.signal.aborted) {
-        let r = null, tries = 0;
-        while (!r && tries++ < 400 && !L.ctl.signal.aborted) {
-          r = await findRound({ ...settings, token: tokenOf() }, world, L.taken, L.ctl.signal);
-        }
-        if (!r) throw new Error('Could not find a place, try again');
-        L.taken.push({ lat: r.lat, lon: r.lon });
-        L.buffer.push(r);
-      }
-    } catch (e) { if (e.name !== 'AbortError') L.failed = e; }
-    finally { L.filling = null; }
-  })();
-  return L.filling;
-}
-
-async function nextLiveRound() {
-  const L = game.live;
-  if (!L.buffer.length) {
-    $('loading').hidden = false;
-    $('loadingText').textContent = game.n ? 'Finding a new place…' : 'Setting sail… finding your first place';
-    L.failed = null;
-    await fillLive();
-    $('loading').hidden = true;
-    if (!L.buffer.length) {
-      if (game.live === L) { toast(L.failed ? `Couldn’t load a round: ${L.failed.message}` : 'Connection lost'); leaveGame(); }
-      return null;
-    }
-  }
-  const r = L.buffer.shift();
-  fillLive(); // prefetch the next one in the background
-  return r;
-}
-
-async function leaveGame() {
-  if (game.mode === 'live' && game.round && !game.round.played) for (const f of game.round.frames) await db.deleteImage(f.key);
+function leaveGame() {
   game.round = null;
-  if (game.live) {
-    const L = game.live; game.live = null;
-    L.ctl.abort();
-    for (const r of L.buffer) for (const f of r.frames) await db.deleteImage(f.key);
-  }
   $('loading').hidden = true;
   show('home'); refreshHome();
 }
@@ -429,19 +418,17 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', 
 
 // ---------- Wire up ----------
 function bind() {
-  ['budget', 'days', 'steps', 'quality'].forEach((id) => $(id).addEventListener('input', renderSettings));
+  ['count', 'perDay', 'steps', 'quality'].forEach((id) => $(id).addEventListener('input', renderSettings));
   $('token').addEventListener('change', renderSettings);
   $('syncBtn').onclick = startSync;
   $('cancelBtn').onclick = () => syncCtl?.abort();
-  $('cleanBtn').onclick = () => cleanPlayed(false);
   $('wipeBtn').onclick = async () => {
     if (!confirm('Delete all rounds, photos and scores on this device?')) return;
     await db.clearAll(); toast('Cleared'); refreshHome();
   };
-  $('playBtn').onclick = () => startGame('daily');
-  $('onlineBtn').onclick = () => startGame('live');
+  $('playBtn').onclick = startGame;
   $('homeBtn').onclick = leaveGame;
-  window.addEventListener('online', refreshHome);
+  window.addEventListener('online', () => { topUpBank(); refreshHome(); });
   window.addEventListener('offline', refreshHome);
   $('stepBack').onclick = () => go(-1);
   $('stepFwd').onclick = () => go(1);
@@ -456,11 +443,13 @@ function bind() {
 
 async function init() {
   bind();
-  await schedulePending(+(await db.getMeta('settings', {}))?.days || 7); // in case a sync was interrupted
   world = await db.getMeta('world');
-  await db.removeOrphanImages().catch(() => {});
   await loadSettings();
+  await schedulePending(settings.perDay); // in case a download was interrupted
+  await db.removeOrphanImages().catch(() => {});
+  await cleanPlayed();
   await refreshHome();
+  topUpBank();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }

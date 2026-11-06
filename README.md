@@ -10,12 +10,12 @@ No build step, no dependencies, no server. It's just static files.
 
 ## Features
 - **Works fully offline** once installed: the app shell is cached by a service worker, and the photos and map are kept in IndexedDB.
-- **Data budget per sync** (default 500 MB) spread over a chosen number of days (default 7).
+- **Always-full bank:** 10 rounds are always kept ready. Whenever there's internet the bank tops itself up after every round, so play is unlimited while online.
+- **Trip downloads:** pick how many rounds to download and how many unlock per day. The app shows how many days that lasts and roughly how much data it needs.
 - **Steps:** each round caches up to *N* photos forward and back along the same road, and you get *N* moves per round.
 - **Offline world map** (Natural Earth countries and ~1,250 towns), downloaded once on the first sync (~2 MB).
 - **Photo quality:** "Sharp" uses 2048 px panoramas at ≈0.5 MB each. "Data saver" uses 1024 px at ≈0.15 MB each.
 - **Space saving:** photos from rounds you've played are deleted automatically at the next sync, and your scores are kept.
-- **Unlimited online play:** when there's internet, a "play unlimited rounds" button streams fresh rounds live (the next one preloads while she plays), and they don't use up her stored offline rounds.
 - **Ranks and awards:** a guess counts as *right* if it's in the correct country or within 250 km. Right answers move her up the ranks: Deckhand → Able Seaman → Bosun → Navigator → First Mate → Captain → Commodore → Admiral → Sea Legend. There are also 34 awards in three tiers: Everyday (17), Hard (8) and Legendary (9), which are almost impossible, such as 50 right countries in a row, landing within 1 km without taking a step, or 100 days in a row.
 - Works on phone and tablet with touch drag, pinch-zoom and a docked map on wide screens.
 
@@ -42,12 +42,8 @@ A read-only client token is included in `js/config.js`, so players don't need on
 
 Each device keeps its own rounds, so sync on each device you want to play on.
 
-## 4. Sync before a passage
-Open Landfall, then open **Sync new rounds**. Paste the token, set the data budget, days and steps, and tap
-**Download rounds**. Keep the app open on screen until the sync finishes. A partial sync still keeps every round it finished.
-
-Rough sizes with "Sharp" quality and 3 steps (7 photos per round): **≈3.5 MB per round, so 500 MB ≈ 140 rounds**.
-The estimate in the app corrects itself after the first sync.
+## 4. Before a passage
+Open **Download rounds for a trip**, set *Rounds to download* and *Rounds per day*, and tap **Download**. Keep the app open on screen until it finishes. Steps, photo quality and an optional personal token are under *Advanced*.
 
 ## Try it without a token
 Open `index.html?demo` to load 5 fake rounds for testing the viewer, steps and map.
