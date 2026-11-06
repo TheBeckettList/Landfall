@@ -144,3 +144,6 @@ footer { text-align: center; margin-top: 20px; }
 .celebrate.legendary .celebrate-title { color: #f5c542; }
 .celebrate.legendary .muted { color: rgba(255,255,255,.8); }
 .celebrate.hard .celebrate-title { color: #8a5a2b; }
+
+.advanced { margin-top: 12px; }
+.advanced summary { font-weight: 600; color: var(--muted); }

@@ -29,7 +29,9 @@ The app will be at `https://<you>.github.io/<repo>/`.
 
 Netlify Drop, Cloudflare Pages and similar hosts work too.
 
-## 2. Get a Mapillary token (free)
+## 2. Mapillary token (already built in)
+A read-only client token is included in `js/config.js`, so players don't need one. If it ever stops working, make a new one as described below and either update `js/config.js` or paste it under Sync → Advanced.
+
 1. Sign in at mapillary.com, then go to **Dashboard → Developers → Register application**.
 2. Copy the **Client Token**. It starts with `MLY|`.
 

@@ -4,6 +4,8 @@ import { WorldMap } from './map.js';
 import { runSync, defaultSettings, schedulePending, findRound, ensureWorld } from './sync.js';
 import { getProgress, rankFor, AWARDS, record, countryAt, awardPerfectDay } from './progress.js';
 import { distanceKm, bearingDeg, score, formatKm, today } from './geo.js';
+import { DEFAULT_TOKEN } from './config.js';
+const tokenOf = () => settings.token || DEFAULT_TOKEN;
 
 const $ = (id) => document.getElementById(id);
 const MB = 1024 * 1024;
@@ -61,7 +63,7 @@ async function refreshHome() {
       <div class="ai">${a.icon}</div><div class="an">${a.name}</div><div class="ad">${a.desc}</div>
     </div>`).join('');
   }).join('');
-  $('onlineBtn').hidden = !(navigator.onLine && settings.token);
+  $('onlineBtn').hidden = !(navigator.onLine && tokenOf());
 
   const ls = await db.getMeta('lastSync');
   $('lastSync').textContent = ls ? `last: ${new Date(ls).toLocaleDateString()}` : '';
@@ -113,7 +115,7 @@ async function renderSettings() {
 
 async function startSync() {
   await renderSettings();
-  if (!settings.token) { toast('Paste your Mapillary token first'); $('token').focus(); return; }
+  if (!tokenOf()) { toast('Add a Mapillary token under Advanced first'); $('advanced').open = true; $('token').focus(); return; }
   if (!navigator.onLine) { toast('You look offline right now'); }
   navigator.storage?.persist?.();
   syncCtl = new AbortController();
@@ -121,7 +123,7 @@ async function startSync() {
   const log = (m) => { $('syncLog').textContent = m; };
   try {
     await cleanPlayed(true);
-    const res = await runSync(settings, {
+    const res = await runSync({ ...settings, token: tokenOf() }, {
       signal: syncCtl.signal,
       log,
       onProgress: ({ bytes, budget, made }) => {
@@ -358,7 +360,7 @@ function fillLive() {
       while (L.buffer.length < 2 && !L.ctl.signal.aborted) {
         let r = null, tries = 0;
         while (!r && tries++ < 400 && !L.ctl.signal.aborted) {
-          r = await findRound(settings, world, L.taken, L.ctl.signal);
+          r = await findRound({ ...settings, token: tokenOf() }, world, L.taken, L.ctl.signal);
         }
         if (!r) throw new Error('Could not find a place, try again');
         L.taken.push({ lat: r.lat, lon: r.lon });
