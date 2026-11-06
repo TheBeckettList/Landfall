@@ -1,7 +1,7 @@
 import * as db from './db.js';
 import { PanoViewer } from './viewer.js';
 import { WorldMap } from './map.js';
-import { fetchRounds, defaultSettings, schedulePending } from './sync.js';
+import { fetchRounds, defaultSettings, schedulePending, STEPS_EACH_WAY } from './sync.js';
 import { getProgress, rankFor, AWARDS, record, countryAt, awardPerfectDay } from './progress.js';
 import { distanceKm, bearingDeg, score, formatKm, today } from './geo.js';
 import { DEFAULT_TOKEN } from './config.js';
@@ -100,30 +100,29 @@ async function updateStorage() {
 
 async function loadSettings() {
   settings = { ...defaultSettings(), ...(await db.getMeta('settings', {})) };
-  for (const k of ['count', 'perDay', 'steps', 'quality', 'token']) $(k).value = settings[k];
+  for (const k of ['count', 'perDay', 'token']) $(k).value = settings[k] ?? '';
   renderSettings();
 }
 
 async function perRoundBytes() {
-  const measured = await db.getMeta('avgFrameBytes_' + settings.quality);
-  const perPhoto = measured || (settings.quality === '1024' ? 0.15 : 0.5) * MB;
-  return { bytes: perPhoto * (1 + settings.steps * 2 * 0.85), measured: !!measured };
+  const measured = await db.getMeta('avgFrameBytes_2048');
+  const perPhoto = measured || 0.5 * MB;
+  // centre photo + up to 5 each way (a few roads end sooner)
+  return { bytes: perPhoto * (1 + STEPS_EACH_WAY * 2 * 0.85), measured: !!measured };
 }
 
 async function renderSettings() {
   settings.count = +$('count').value;
   settings.perDay = +$('perDay').value;
-  settings.steps = +$('steps').value;
-  settings.quality = $('quality').value;
   settings.token = $('token').value.trim();
   $('countOut').textContent = settings.count;
   $('perDayOut').textContent = settings.perDay;
-  $('stepsOut').textContent = settings.steps ? `${settings.steps} (walk up to ${settings.steps} photos along the road)` : 'none (one photo per spot)';
   const { bytes, measured } = await perRoundBytes();
   const days = Math.ceil(settings.count / settings.perDay);
   const mb = (settings.count * bytes) / MB;
   const size = mb >= 1000 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`;
   $('estimate').innerHTML = `Lasts <b>${days} day${days === 1 ? '' : 's'}</b> · downloads about <b>${size}</b>` +
+    `<br><span class="muted small">≈ ${(bytes / MB).toFixed(1)} MB per round (sharp 360° photos, 5 steps each way)</span>` +
     (measured ? '' : '<br><span class="muted small">Size is an estimate until the first download.</span>');
   db.setMeta('settings', settings);
 }
@@ -131,7 +130,7 @@ async function renderSettings() {
 async function rememberSizes() {
   const rounds = (await db.allRounds()).filter((r) => r.frames?.length && r.bytes);
   const frames = rounds.reduce((s, r) => s + r.frames.length, 0);
-  if (frames) await db.setMeta('avgFrameBytes_' + settings.quality, rounds.reduce((s, r) => s + r.bytes, 0) / frames);
+  if (frames) await db.setMeta('avgFrameBytes_2048', rounds.reduce((s, r) => s + r.bytes, 0) / frames);
 }
 
 async function startSync() {
@@ -159,7 +158,7 @@ async function startSync() {
     syncCtl = null;
     $('syncBtn').hidden = false; $('cancelBtn').hidden = true;
     world = await db.getMeta('world');
-    if (map && world) map.setData(world.countries, world.places);
+    if (map && world) map.setData(world);
     renderSettings();
     refreshHome();
   }
@@ -183,7 +182,7 @@ function topUpBank() {
         });
       }
       world = await db.getMeta('world');
-      if (map && world && !map.rings.length) map.setData(world.countries, world.places);
+      if (map && world && map.worldV !== world.v) map.setData(world);
     } catch (e) { console.warn('bank refill', e); }
     finally { bankJob = null; bankWaiters.splice(0).forEach((f) => f()); refreshHomeSoon(); }
   })();
@@ -216,7 +215,7 @@ async function startGame() {
   }
   if (!map) {
     map = new WorldMap($('map'), { onTap: placeGuess });
-    if (world) map.setData(world.countries, world.places);
+    if (world) map.setData(world);
   }
   topUpBank();
   nextRound();
@@ -418,7 +417,7 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', 
 
 // ---------- Wire up ----------
 function bind() {
-  ['count', 'perDay', 'steps', 'quality'].forEach((id) => $(id).addEventListener('input', renderSettings));
+  ['count', 'perDay'].forEach((id) => $(id).addEventListener('input', renderSettings));
   $('token').addEventListener('change', renderSettings);
   $('syncBtn').onclick = startSync;
   $('cancelBtn').onclick = () => syncCtl?.abort();

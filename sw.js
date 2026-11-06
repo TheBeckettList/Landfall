@@ -1,5 +1,5 @@
 // Caches the app itself so it opens with no internet. Photos live in IndexedDB.
-const VERSION = 'landfall-v5';
+const VERSION = 'landfall-v6';
 const SHELL = [
   './', 'index.html', 'style.css', 'manifest.webmanifest',
   'js/app.js', 'js/db.js', 'js/geo.js', 'js/map.js', 'js/sync.js', 'js/viewer.js', 'js/progress.js', 'js/config.js',

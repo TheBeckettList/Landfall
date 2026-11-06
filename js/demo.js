@@ -55,7 +55,7 @@ export async function loadDemo() {
     const box = (name, w, s, e, n) => ({ type: 'Feature', properties: { name, continent: name },
       geometry: { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] } });
     await db.setMeta('world', {
-      v: 2,
+      v: 3,
       countries: { type: 'FeatureCollection', features: [
         box('Americas', -125, -55, -35, 60), box('Eurafrica', -18, -35, 50, 70), box('Asia', 50, 5, 145, 70), box('Oz', 113, -44, 154, -11), box('Iceland', -24, 63, -13, 66.5),
       ] },

@@ -18,6 +18,8 @@ export class WorldMap {
     this.onTap = onTap || (() => {});
     this.cx = 0.5; this.cy = 0.42; this.z = 1;
     this.rings = []; // projected rings [Float32Array x,y,...]
+    this.stateLines = [];
+    this.labels = [];
     this.cities = [];
     this.markers = [];
     this.lines = [];
@@ -25,29 +27,59 @@ export class WorldMap {
     new ResizeObserver(() => this.draw()).observe(canvas);
   }
 
-  setData(countries, places) {
+  setData(world) {
+    const { countries, places, states } = world || {};
+    this.worldV = world?.v;
+    const proj = (ring) => {
+      const a = new Float32Array(ring.length * 2);
+      let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+      ring.forEach(([lo, la], i) => {
+        const x = mx(lo), y = my(la);
+        a[i * 2] = x; a[i * 2 + 1] = y;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      });
+      a.bb = [x0, y0, x1, y1];
+      return a;
+    };
     this.rings = [];
-    if (countries) {
-      for (const f of countries.features || []) {
-        const g = f.geometry; if (!g) continue;
-        const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
-        for (const poly of polys) for (const ring of poly) {
-          const a = new Float32Array(ring.length * 2);
-          ring.forEach(([lo, la], i) => { a[i * 2] = mx(lo); a[i * 2 + 1] = my(la); });
-          this.rings.push(a);
-        }
-      }
+    this.labels = [];
+    for (const f of countries?.features || []) {
+      const g = f.geometry; if (!g) continue;
+      const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+      for (const poly of polys) for (const ring of poly) this.rings.push(proj(ring));
+      const p = f.properties || {};
+      if (p.label && p.name) this.labels.push({ x: mx(p.label[0]), y: my(p.label[1]), name: p.name.toUpperCase(), rank: p.rank ?? 5 });
+    }
+    this.labels.sort((a, b) => a.rank - b.rank);
+    this.stateLines = [];
+    for (const f of states?.features || []) {
+      const g = f.geometry; if (!g) continue;
+      const lines = g.type === 'LineString' ? [g.coordinates] : g.type === 'MultiLineString' ? g.coordinates : [];
+      for (const l of lines) this.stateLines.push(proj(l));
     }
     this.cities = [];
-    if (places) {
-      for (const f of places.features || []) {
-        const [lo, la] = f.geometry.coordinates;
-        const p = f.properties || {};
-        this.cities.push({ x: mx(lo), y: my(la), name: p.name, rank: p.scalerank ?? 5 });
-      }
-      this.cities.sort((a, b) => a.rank - b.rank);
+    for (const f of places?.features || []) {
+      const [lo, la] = f.geometry.coordinates;
+      const p = f.properties || {};
+      this.cities.push({ x: mx(lo), y: my(la), name: p.name, rank: p.scalerank ?? 5 });
     }
+    this.cities.sort((a, b) => a.rank - b.rank);
     this.draw();
+  }
+
+  // Add a projected path to the canvas, skipping offscreen shapes and sub-pixel detail.
+  _path(ctx, r, s, ox, oy, W, H, close) {
+    const bb = r.bb;
+    if (bb[2] * s + ox < -2 || bb[0] * s + ox > W + 2 || bb[3] * s + oy < -2 || bb[1] * s + oy > H + 2) return;
+    let lx = r[0] * s + ox, ly = r[1] * s + oy;
+    ctx.moveTo(lx, ly);
+    const n = r.length;
+    for (let i = 2; i < n; i += 2) {
+      const x = r[i] * s + ox, y = r[i + 1] * s + oy;
+      if (i < n - 2 && Math.abs(x - lx) < 0.8 && Math.abs(y - ly) < 0.8) continue;
+      ctx.lineTo(x, y); lx = x; ly = y;
+    }
+    if (close) ctx.closePath();
   }
 
   get scale() { return TILE * Math.pow(2, this.z); }
@@ -111,20 +143,25 @@ export class WorldMap {
 
     // land
     if (this.rings.length) {
+      const copies = offsets.map((o) => [(o - this.cx) * s + W / 2, -this.cy * s + H / 2]).filter(([ox]) => ox < W && ox + s > 0);
       ctx.beginPath();
-      for (const o of offsets) {
-        const ox = (o - this.cx) * s + W / 2, oy = -this.cy * s + H / 2;
-        if (ox > W || ox + s < 0) continue;
-        for (const r of this.rings) {
-          ctx.moveTo(r[0] * s + ox, r[1] * s + oy);
-          for (let i = 2; i < r.length; i += 2) ctx.lineTo(r[i] * s + ox, r[i + 1] * s + oy);
-          ctx.closePath();
-        }
-      }
+      for (const [ox, oy] of copies) for (const r of this.rings) this._path(ctx, r, s, ox, oy, W, H, true);
       ctx.fillStyle = '#f2efe6';
       ctx.fill('evenodd');
-      ctx.strokeStyle = '#b9a98c';
-      ctx.lineWidth = 0.7;
+      // state / province lines once zoomed in a little
+      if (this.stateLines.length && this.z >= 2.2) {
+        ctx.beginPath();
+        for (const [ox, oy] of copies) for (const l of this.stateLines) this._path(ctx, l, s, ox, oy, W, H, false);
+        ctx.strokeStyle = `rgba(150, 130, 105, ${Math.min(0.75, (this.z - 2.2) * 0.5 + 0.25)})`;
+        ctx.lineWidth = 0.6;
+        ctx.setLineDash([3, 2]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.beginPath();
+      for (const [ox, oy] of copies) for (const r of this.rings) this._path(ctx, r, s, ox, oy, W, H, true);
+      ctx.strokeStyle = '#a8957a';
+      ctx.lineWidth = this.z < 3 ? 0.7 : 1.1;
       ctx.stroke();
     } else {
       ctx.fillStyle = '#35556a';
@@ -133,18 +170,39 @@ export class WorldMap {
       ctx.fillText('World map downloads with your first sync', W / 2, H / 2);
     }
 
+    const placed = [];
+    // country names, biggest first, fading out once you're zoomed right in
+    if (this.labels?.length && this.z < 7) {
+      const maxRank = this.z < 1.5 ? 2 : this.z < 2.5 ? 3 : this.z < 3.5 ? 4 : this.z < 4.5 ? 5 : 10;
+      ctx.font = `600 ${this.z < 3 ? 10 : 11}px system-ui`;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(120, 100, 75, 0.85)';
+      for (const lb of this.labels) {
+        if (lb.rank > maxRank) continue;
+        for (const o of offsets) {
+          const [x, y] = this.toScreen(lb.x + o, lb.y);
+          if (x < -80 || x > W + 80 || y < -10 || y > H + 10) continue;
+          const w = ctx.measureText(lb.name).width;
+          if (placed.some((p) => Math.abs(p[0] - x) < (w + p[2]) / 2 + 4 && Math.abs(p[1] - y) < 13)) continue;
+          placed.push([x, y, w]);
+          ctx.fillText(lb.name, x, y);
+        }
+      }
+    }
+
     // cities: show more as you zoom in
-    const maxRank = this.z < 2 ? 1 : this.z < 3 ? 2 : this.z < 4 ? 4 : this.z < 5 ? 6 : 10;
+    const maxCity = this.z < 2 ? 1 : this.z < 3 ? 2 : this.z < 4 ? 4 : this.z < 5 ? 6 : 10;
     ctx.font = '11px system-ui';
     ctx.textAlign = 'left';
-    const placed = [];
     for (const ct of this.cities) {
-      if (ct.rank > maxRank) continue;
+      if (ct.rank > maxCity) continue;
       for (const o of offsets) {
         const [x, y] = this.toScreen(ct.x + o, ct.y);
         if (x < -50 || x > W + 50 || y < -20 || y > H + 20) continue;
-        if (placed.some((p) => Math.abs(p[0] - x) < 60 && Math.abs(p[1] - y) < 14)) continue;
-        placed.push([x, y]);
+        const w = ctx.measureText(ct.name).width;
+        const cx = x + 4 + w / 2;
+        if (placed.some((p) => Math.abs(p[0] - cx) < (w + p[2]) / 2 + 4 && Math.abs(p[1] - y) < 14)) continue;
+        placed.push([cx, y, w]);
         ctx.fillStyle = '#5b4a3a';
         ctx.beginPath(); ctx.arc(x, y, 2, 0, 7); ctx.fill();
         ctx.fillStyle = '#3e3328';

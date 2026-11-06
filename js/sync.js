@@ -10,7 +10,7 @@ const NE = [
   'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/',
 ];
 const FIELDS = 'id,computed_geometry,geometry,computed_compass_angle,compass_angle,is_pano,captured_at,creator,sequence,thumb_1024_url,thumb_2048_url';
-const STEP_M = 12;     // minimum spacing between steps, metres
+const STEP_M = 36;     // minimum spacing between steps, metres
 const MAX_GAP_M = 400; // a bigger jump than this ends the walkable path
 const MIN_SPREAD_KM = 25;
 
@@ -27,8 +27,9 @@ const FALLBACK_SEEDS = [
 ];
 
 export function defaultSettings() {
-  return { token: '', count: 140, perDay: 20, steps: 3, quality: '2048' };
+  return { token: '', count: 100, perDay: 15 };
 }
+export const STEPS_EACH_WAY = 5;
 
 async function fetchJSON(url, signal) {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -47,10 +48,11 @@ const sleep = (ms, signal) => new Promise((r, j) => {
 });
 
 // ---- World data (map + seed points), fetched once ----
+const WORLD_VERSION = 3;
 export async function ensureWorld(signal, log) {
   const have = await db.getMeta('world');
-  if (have && have.v >= 2) return have;
-  log('Downloading world map (one time, ~2 MB)…');
+  if (have && have.v >= WORLD_VERSION) return have;
+  log(have ? 'Upgrading the world map (one time, ~6 MB)…' : 'Downloading world map (one time, ~6 MB)…');
   const get = async (file) => {
     let err;
     for (const base of NE) {
@@ -59,27 +61,53 @@ export async function ensureWorld(signal, log) {
     }
     throw err;
   };
-  const [countries, places] = await Promise.all([
-    get('ne_110m_admin_0_countries.geojson'),
-    get('ne_50m_populated_places_simple.geojson'),
-  ]);
-  const round = (c) => (Array.isArray(c[0]) ? c.map(round) : [Math.round(c[0] * 1e3) / 1e3, Math.round(c[1] * 1e3) / 1e3]);
+  let countries, places, states;
+  try {
+    [countries, places, states] = await Promise.all([
+      get('ne_50m_admin_0_countries.geojson').catch((e) => { if (e.name === 'AbortError') throw e; return get('ne_110m_admin_0_countries.geojson'); }),
+      get('ne_50m_populated_places_simple.geojson'),
+      get('ne_50m_admin_1_states_provinces_lines.geojson').catch((e) => { if (e.name === 'AbortError') throw e; return null; }),
+    ]);
+  } catch (e) {
+    if (have && e.name !== 'AbortError') return have; // keep the older map rather than failing
+    throw e;
+  }
+  // Round to ~100 m and drop repeated points to keep storage small.
+  const pt = (c) => [Math.round(c[0] * 1e3) / 1e3, Math.round(c[1] * 1e3) / 1e3];
+  const line = (l) => l.map(pt).filter((p, i, a) => i === 0 || p[0] !== a[i - 1][0] || p[1] !== a[i - 1][1]);
+  const geom = (g) => {
+    switch (g.type) {
+      case 'Polygon': return { type: g.type, coordinates: g.coordinates.map(line) };
+      case 'MultiPolygon': return { type: g.type, coordinates: g.coordinates.map((p) => p.map(line)) };
+      case 'LineString': return { type: g.type, coordinates: line(g.coordinates) };
+      case 'MultiLineString': return { type: g.type, coordinates: g.coordinates.map(line) };
+      default: return g;
+    }
+  };
+  const P = (f) => f.properties || {};
   const world = {
-    v: 2,
+    v: WORLD_VERSION,
     countries: {
       type: 'FeatureCollection',
-      features: countries.features.map((f) => ({
+      features: countries.features.filter((f) => f.geometry).map((f) => ({
         type: 'Feature',
-        properties: { name: f.properties.NAME || f.properties.ADMIN, continent: f.properties.CONTINENT },
-        geometry: { type: f.geometry.type, coordinates: round(f.geometry.coordinates) },
+        properties: {
+          name: P(f).NAME || P(f).ADMIN, continent: P(f).CONTINENT,
+          label: P(f).LABEL_X != null ? [P(f).LABEL_X, P(f).LABEL_Y] : null, rank: P(f).LABELRANK ?? P(f).scalerank ?? 5,
+        },
+        geometry: geom(f.geometry),
       })),
     },
+    states: states ? {
+      type: 'FeatureCollection',
+      features: states.features.filter((f) => f.geometry).map((f) => ({ type: 'Feature', properties: {}, geometry: geom(f.geometry) })),
+    } : null,
     places: {
       type: 'FeatureCollection',
       features: places.features.map((f) => ({
         type: 'Feature',
-        properties: { name: f.properties.name, country: f.properties.adm0name, scalerank: f.properties.scalerank },
-        geometry: { type: 'Point', coordinates: round(f.geometry.coordinates) },
+        properties: { name: P(f).name, country: P(f).adm0name, scalerank: P(f).scalerank },
+        geometry: { type: 'Point', coordinates: pt(f.geometry.coordinates) },
       })),
     },
   };
@@ -126,6 +154,7 @@ const pos = (img) => {
 
 // ---- One round ----
 export async function findRound(s, world, taken, signal) {
+  s = { ...s, steps: STEPS_EACH_WAY };
   const seed = randomSeed(world);
   const h = 0.02;
   const bbox = [seed.lon - h, seed.lat - h, seed.lon + h, seed.lat + h].map((v) => v.toFixed(5)).join(',');
@@ -141,7 +170,7 @@ export async function findRound(s, world, taken, signal) {
   const ids = (seq.data || []).map((d) => d.id);
   let ci = ids.indexOf(pick.id);
   if (ci < 0) { ids.splice(0, ids.length, pick.id); ci = 0; }
-  const lo = Math.max(0, ci - 40), hi = Math.min(ids.length, ci + 41);
+  const lo = Math.max(0, ci - 70), hi = Math.min(ids.length, ci + 71);
   const windowIds = ids.slice(lo, hi);
 
   // Details for the window (batch, with per-image fallback)
@@ -184,7 +213,7 @@ export async function findRound(s, world, taken, signal) {
   let bytes = 0;
   const frames = [];
   for (const d of path) {
-    const url = s.quality === '1024' ? d.thumb_1024_url || d.thumb_2048_url : d.thumb_2048_url || d.thumb_1024_url;
+    const url = d.thumb_2048_url || d.thumb_1024_url; // always the sharp version
     if (!url) continue;
     const r = await fetch(url, { signal });
     if (!r.ok) continue;
@@ -204,7 +233,7 @@ export async function findRound(s, world, taken, signal) {
     unlockDate: 'pending',
     lat: p.lat, lon: p.lon,
     frames, centreIdx,
-    stepsAllowed: s.steps,
+    stepsAllowed: back.length + fwd.length, // free to walk the whole cached stretch
     creator: centre.creator?.username || 'Mapillary contributor',
     capturedAt: centre.captured_at || null,
     imageId: centre.id,

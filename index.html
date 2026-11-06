@@ -45,7 +45,7 @@
     <p class="muted small">Do this before you lose internet. The rounds are saved on this device and unlock a set number each day.</p>
 
     <label>Rounds to download: <b id="countOut"></b>
-      <input id="count" type="range" min="10" max="600" step="10">
+      <input id="count" type="range" min="10" max="400" step="10">
     </label>
     <label>Rounds per day: <b id="perDayOut"></b>
       <input id="perDay" type="range" min="1" max="50" step="1">
@@ -61,15 +61,6 @@
 
     <details id="advanced" class="advanced">
       <summary class="small">Advanced</summary>
-      <label>Steps per round: <b id="stepsOut"></b>
-        <input id="steps" type="range" min="0" max="8" step="1">
-      </label>
-      <label>Photo quality
-        <select id="quality">
-          <option value="2048">Sharp (≈0.5 MB per photo)</option>
-          <option value="1024">Data saver (≈0.15 MB per photo)</option>
-        </select>
-      </label>
       <label>Your own Mapillary token (optional)
         <input id="token" type="password" autocomplete="off" placeholder="Leave empty to use the built-in one">
       </label>
